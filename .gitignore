@@ -1,0 +1,17 @@
+# DCM output directories
+output/
+out/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Secrets / credentials
+.env
+*.pem
+credentials.json

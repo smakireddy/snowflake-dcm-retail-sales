@@ -1,0 +1,58 @@
+-- ============================================================================
+-- TABLES: Source tables for retail sales domain
+-- All tables have CHANGE_TRACKING = TRUE to enable dynamic table CDC
+-- ============================================================================
+
+-- Customer master data
+DEFINE TABLE RETAIL_DATA{{env_suffix}}.RAW.CUSTOMERS (
+    CUSTOMER_ID NUMBER NOT NULL,
+    FIRST_NAME VARCHAR(100),
+    LAST_NAME VARCHAR(100),
+    EMAIL VARCHAR(255),
+    PHONE VARCHAR(20),
+    CITY VARCHAR(100),
+    STATE VARCHAR(50),
+    SIGNUP_DATE DATE,
+    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+)
+CHANGE_TRACKING = TRUE
+COMMENT = 'Customer master data from CRM system';
+
+-- Product catalog
+DEFINE TABLE RETAIL_DATA{{env_suffix}}.RAW.PRODUCTS (
+    PRODUCT_ID NUMBER NOT NULL,
+    PRODUCT_NAME VARCHAR(200),
+    CATEGORY VARCHAR(100),
+    SUBCATEGORY VARCHAR(100),
+    UNIT_PRICE NUMBER(10,2),
+    IS_ACTIVE BOOLEAN DEFAULT TRUE,
+    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+)
+CHANGE_TRACKING = TRUE
+COMMENT = 'Product catalog from inventory system';
+
+-- Sales order headers
+DEFINE TABLE RETAIL_DATA{{env_suffix}}.RAW.SALES_ORDERS (
+    ORDER_ID NUMBER NOT NULL,
+    CUSTOMER_ID NUMBER NOT NULL,
+    ORDER_DATE DATE,
+    STATUS VARCHAR(20) DEFAULT 'PENDING',
+    TOTAL_AMOUNT NUMBER(12,2),
+    PAYMENT_METHOD VARCHAR(50),
+    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+)
+CHANGE_TRACKING = TRUE
+COMMENT = 'Sales order headers from POS system';
+
+-- Order line items (order detail)
+DEFINE TABLE RETAIL_DATA{{env_suffix}}.RAW.ORDER_LINE_ITEMS (
+    LINE_ITEM_ID NUMBER NOT NULL,
+    ORDER_ID NUMBER NOT NULL,
+    PRODUCT_ID NUMBER NOT NULL,
+    QUANTITY NUMBER,
+    UNIT_PRICE NUMBER(10,2),
+    LINE_TOTAL NUMBER(12,2),
+    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+)
+CHANGE_TRACKING = TRUE
+COMMENT = 'Order line items - detail rows per sales order';

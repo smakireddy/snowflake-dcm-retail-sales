@@ -1,0 +1,71 @@
+-- ============================================================================
+-- ANALYTICS: Dynamic tables for retail sales transformations
+-- These auto-refresh based on TARGET_LAG when source data changes
+-- ============================================================================
+
+-- Customer Orders Summary: aggregated view per customer
+DEFINE DYNAMIC TABLE RETAIL_DATA{{env_suffix}}.ANALYTICS.DT_CUSTOMER_ORDERS_SUMMARY
+WAREHOUSE = 'RETAIL_WH{{env_suffix}}'
+TARGET_LAG = '{{dt_lag}}'
+INITIALIZE = 'ON_CREATE'
+AS
+SELECT
+    c.CUSTOMER_ID,
+    c.FIRST_NAME,
+    c.LAST_NAME,
+    c.EMAIL,
+    c.CITY,
+    c.STATE,
+    COUNT(DISTINCT o.ORDER_ID) AS TOTAL_ORDERS,
+    SUM(o.TOTAL_AMOUNT) AS TOTAL_SPEND,
+    AVG(o.TOTAL_AMOUNT) AS AVG_ORDER_VALUE,
+    MIN(o.ORDER_DATE) AS FIRST_ORDER_DATE,
+    MAX(o.ORDER_DATE) AS LAST_ORDER_DATE
+FROM RETAIL_DATA{{env_suffix}}.RAW.CUSTOMERS c
+LEFT JOIN RETAIL_DATA{{env_suffix}}.RAW.SALES_ORDERS o
+    ON c.CUSTOMER_ID = o.CUSTOMER_ID
+GROUP BY
+    c.CUSTOMER_ID, c.FIRST_NAME, c.LAST_NAME,
+    c.EMAIL, c.CITY, c.STATE;
+
+-- Product Sales Metrics: aggregated performance per product
+DEFINE DYNAMIC TABLE RETAIL_DATA{{env_suffix}}.ANALYTICS.DT_PRODUCT_SALES_METRICS
+WAREHOUSE = 'RETAIL_WH{{env_suffix}}'
+TARGET_LAG = '{{dt_lag}}'
+INITIALIZE = 'ON_CREATE'
+AS
+SELECT
+    p.PRODUCT_ID,
+    p.PRODUCT_NAME,
+    p.CATEGORY,
+    p.SUBCATEGORY,
+    p.UNIT_PRICE AS CATALOG_PRICE,
+    SUM(li.QUANTITY) AS TOTAL_UNITS_SOLD,
+    SUM(li.LINE_TOTAL) AS TOTAL_REVENUE,
+    COUNT(DISTINCT li.ORDER_ID) AS ORDER_COUNT,
+    AVG(li.UNIT_PRICE) AS AVG_SELLING_PRICE
+FROM RETAIL_DATA{{env_suffix}}.RAW.PRODUCTS p
+LEFT JOIN RETAIL_DATA{{env_suffix}}.RAW.ORDER_LINE_ITEMS li
+    ON p.PRODUCT_ID = li.PRODUCT_ID
+GROUP BY
+    p.PRODUCT_ID, p.PRODUCT_NAME, p.CATEGORY,
+    p.SUBCATEGORY, p.UNIT_PRICE;
+
+-- Daily Sales Aggregate: daily-level business metrics
+DEFINE DYNAMIC TABLE RETAIL_DATA{{env_suffix}}.ANALYTICS.DT_DAILY_SALES_AGG
+WAREHOUSE = 'RETAIL_WH{{env_suffix}}'
+TARGET_LAG = '{{dt_lag}}'
+INITIALIZE = 'ON_CREATE'
+AS
+SELECT
+    o.ORDER_DATE AS SALE_DATE,
+    COUNT(DISTINCT o.ORDER_ID) AS TOTAL_ORDERS,
+    COUNT(DISTINCT o.CUSTOMER_ID) AS UNIQUE_CUSTOMERS,
+    SUM(o.TOTAL_AMOUNT) AS DAILY_REVENUE,
+    AVG(o.TOTAL_AMOUNT) AS AVG_ORDER_VALUE,
+    SUM(li.QUANTITY) AS TOTAL_UNITS_SOLD
+FROM RETAIL_DATA{{env_suffix}}.RAW.SALES_ORDERS o
+LEFT JOIN RETAIL_DATA{{env_suffix}}.RAW.ORDER_LINE_ITEMS li
+    ON o.ORDER_ID = li.ORDER_ID
+WHERE o.STATUS != 'CANCELLED'
+GROUP BY o.ORDER_DATE;

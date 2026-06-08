@@ -1,0 +1,43 @@
+manifest_version: 2
+type: DCM_PROJECT
+default_target: 'DEV'
+
+targets:
+  DEV:
+    account_identifier: SFGOVTD-PP75724
+    project_name: 'RETAIL_DB_DEV.DCM_PROJECTS.RETAIL_SALES_DEV'
+    project_owner: ENGINEERING_DEV
+    templating_config: 'DEV'
+  STG:
+    account_identifier: SFGOVTD-PP75724
+    project_name: 'RETAIL_DB_STG.DCM_PROJECTS.RETAIL_SALES_STG'
+    project_owner: ENGINEERING_STG
+    templating_config: 'STG'
+  PROD:
+    account_identifier: SFGOVTD-PP75724
+    project_name: 'RETAIL_DB_PROD.DCM_PROJECTS.RETAIL_SALES_PROD'
+    project_owner: ENGINEERING_PROD
+    templating_config: 'PROD'
+
+templating:
+  defaults:
+    env_suffix: '_DEV'
+    wh_size: 'XSMALL'
+    dt_lag: '1 hour'
+    retention_days: 1
+  configurations:
+    DEV:
+      env_suffix: '_DEV'
+      wh_size: 'XSMALL'
+      dt_lag: '2 minutes'
+      retention_days: 1
+    STG:
+      env_suffix: '_STG'
+      wh_size: 'SMALL'
+      dt_lag: '2 minutes'
+      retention_days: 1
+    PROD:
+      env_suffix: '_PROD'
+      wh_size: 'MEDIUM'
+      dt_lag: '2 minutes'
+      retention_days: 1
