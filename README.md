@@ -57,8 +57,9 @@ Source Systems ──▶ RAW Tables (CHANGE_TRACKING=TRUE)
 | Analytics | `DT_DAILY_SALES_AGG` | Dynamic Table | Daily business metrics |
 | Serve | `VW_CUSTOMER_360` | View | Customer profile + segmentation |
 | Serve | `VW_PRODUCT_PERFORMANCE` | View | Product KPIs + performance tier |
+| Procedures | `CANCEL_CUSTOMER_ORDERS` | Stored Procedure | Cancels all orders for a given customer |
 
-**Total: 14 objects**
+**Total: 15 objects**
 
 ## Project Structure
 
@@ -70,7 +71,8 @@ retail-sales-project/
         ├── infrastructure.sql      # Database, schemas, warehouse
         ├── tables.sql              # Source tables (RAW)
         ├── analytics.sql           # Dynamic tables (transformations)
-        └── serve.sql               # Views (consumption)
+        ├── serve.sql               # Views (consumption)
+        └── procedures.sql          # Stored procedures
 ```
 
 ## Prerequisites
