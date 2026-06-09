@@ -15,3 +15,6 @@ Thumbs.db
 .env
 *.pem
 credentials.json
+
+# Manifest with real account identifiers (use manifest.yml.example as template)
+manifest.yml

@@ -1,20 +1,31 @@
+# ============================================================================
+# DCM Project Manifest — EXAMPLE
+# Copy this file to manifest.yml and replace placeholder values
+# ============================================================================
+# cp manifest.yml.example manifest.yml
+# Then update:
+#   - account_identifier: your Snowflake account locator (run SELECT CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME())
+#   - project_owner: your deployment role
+#   - connection: use -c <your_connection> on CLI commands
+# ============================================================================
+
 manifest_version: 2
 type: DCM_PROJECT
 default_target: 'DEV'
 
 targets:
   DEV:
-    account_identifier: SFGOVTD-PP75724
+    account_identifier: <YOUR_ACCOUNT_IDENTIFIER>
     project_name: 'RETAIL_DB_DEV.DCM_PROJECTS.RETAIL_SALES_DEV'
     project_owner: ENGINEERING_DEV
     templating_config: 'DEV'
   STG:
-    account_identifier: SFGOVTD-PP75724
+    account_identifier: <YOUR_ACCOUNT_IDENTIFIER>
     project_name: 'RETAIL_DB_STG.DCM_PROJECTS.RETAIL_SALES_STG'
     project_owner: ENGINEERING_STG
     templating_config: 'STG'
   PROD:
-    account_identifier: SFGOVTD-PP75724
+    account_identifier: <YOUR_ACCOUNT_IDENTIFIER>
     project_name: 'RETAIL_DB_PROD.DCM_PROJECTS.RETAIL_SALES_PROD'
     project_owner: ENGINEERING_PROD
     templating_config: 'PROD'
