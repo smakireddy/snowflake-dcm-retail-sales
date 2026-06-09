@@ -65,7 +65,9 @@ Source Systems ──▶ RAW Tables (CHANGE_TRACKING=TRUE)
 
 ```
 retail-sales-project/
-├── manifest.yml                    # Targets, templating, project config
+├── manifest.yml.example            # Template (tracked in git)
+├── manifest.yml                    # Your local config (gitignored)
+├── .gitignore
 └── sources/
     └── definitions/
         ├── infrastructure.sql      # Database, schemas, warehouse
@@ -74,6 +76,25 @@ retail-sales-project/
         ├── serve.sql               # Views (consumption)
         └── procedures.sql          # Stored procedures
 ```
+
+## Getting Started
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/smakireddy/snowflake-dcm-retail-sales.git
+cd snowflake-dcm-retail-sales
+
+# 2. Create your local manifest from the example
+cp manifest.yml.example manifest.yml
+
+# 3. Edit manifest.yml — replace <YOUR_ACCOUNT_IDENTIFIER> with your account
+#    Find yours with: SELECT CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME()
+
+# 4. Run DCM commands
+snow dcm raw-analyze RETAIL_DB_DEV.DCM_PROJECTS.RETAIL_SALES_DEV -c <connection> --target DEV
+```
+
+> **Note**: `manifest.yml` is gitignored because it contains account-specific identifiers. Always use `manifest.yml.example` as the template.
 
 ## Prerequisites
 
