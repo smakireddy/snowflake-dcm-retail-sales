@@ -1,80 +1,210 @@
-# Building a Retail Sales Analytics Pipeline with Snowflake DCM
+# Snowflake DCM Projects: Infrastructure as Code for Snowflake
 
-## Introduction
+> **Status**: Preview Feature — Available in AWS, Azure, and GCP commercial regions.
+>
+> **Reference**: [Snowflake DCM Projects Documentation](https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-overview)
 
-Database Change Management (DCM) is Snowflake's native infrastructure-as-code solution. It lets you define your entire data platform — databases, tables, dynamic tables, views, warehouses, and more — as declarative SQL files, then deploy them consistently across environments.
+---
 
-This article walks through building a complete retail sales analytics pipeline using DCM, covering project setup, multi-environment configuration, and production best practices.
+## Table of Contents
 
-## What is DCM?
+1. [What is a DCM Project?](#what-is-a-dcm-project)
+2. [The DCM Project Object](#the-dcm-project-object)
+3. [DCM Project Lifecycle](#dcm-project-lifecycle)
+4. [Project File Structure](#project-file-structure)
+5. [Supported Object Types](#supported-object-types)
+6. [Multi-Environment Deployment](#multi-environment-deployment)
+7. [How DCM Detects Changes](#how-dcm-detects-changes)
+8. [Practical Example: Retail Sales Pipeline](#practical-example-retail-sales-pipeline)
+9. [Command Reference](#command-reference)
+10. [Key Constraints and Considerations](#key-constraints-and-considerations)
+11. [Interface Options](#interface-options)
+12. [CI/CD Integration](#cicd-integration)
+13. [Summary](#summary)
+14. [Further Reading](#further-reading)
 
-DCM brings the Terraform/dbt model to Snowflake infrastructure management:
+---
 
-- **Declarative**: You define the desired state, DCM figures out what to create, alter, or drop
-- **Idempotent**: Running deploy multiple times is safe — only changes are applied
-- **Multi-environment**: One codebase deploys to DEV, STG, and PROD with different configurations
-- **Native**: Built into the Snowflake CLI (`snow`), no third-party tools needed
+## What is a DCM Project?
 
-### DCM vs Traditional DDL
+A **DCM Project** (Database Change Management Project) is Snowflake's native infrastructure-as-code solution. It enables a **declarative approach** to managing Snowflake objects — you define the desired state of your environment, and Snowflake determines and applies the necessary changes to reach that state.
+
+Instead of writing imperative scripts that say *how* to change things step-by-step, you declare *what* should exist. Snowflake handles the sequencing, dependency resolution, and change detection automatically.
+
+### The Core Principle: Declarative over Imperative
 
 ```sql
--- Traditional: imperative, order-dependent, not idempotent
-CREATE TABLE IF NOT EXISTS my_db.raw.customers (...);
+-- IMPERATIVE (traditional): You manage the "how"
+CREATE TABLE IF NOT EXISTS my_db.raw.customers (id NUMBER);
+ALTER TABLE my_db.raw.customers ADD COLUMN email VARCHAR(255);
 ALTER TABLE my_db.raw.customers ADD COLUMN phone VARCHAR(20);
 
--- DCM: declarative, dependency-resolved, always idempotent
+-- DECLARATIVE (DCM): You declare the "what"
 DEFINE TABLE my_db.raw.customers (
-    customer_id NUMBER NOT NULL,
-    phone VARCHAR(20)    -- just add it to the definition
+    id NUMBER,
+    email VARCHAR(255),
+    phone VARCHAR(20)
 );
 ```
 
-## The Scenario
+With DCM, there is no `ALTER`. You modify the definition, and DCM figures out what changed.
 
-We're building a retail sales analytics platform with three layers:
+---
 
-```
-┌─────────────────┐     ┌──────────────────────┐     ┌─────────────────────┐
-│   RAW (Source)  │────▶│  ANALYTICS (Dynamic  │────▶│   SERVE (Views)     │
-│                 │     │      Tables)          │     │                     │
-│  CUSTOMERS      │     │  DT_CUSTOMER_ORDERS   │     │  VW_CUSTOMER_360    │
-│  PRODUCTS       │     │  DT_PRODUCT_SALES     │     │  VW_PRODUCT_PERF    │
-│  SALES_ORDERS   │     │  DT_DAILY_SALES_AGG   │     │                     │
-│  ORDER_LINE_ITEMS│    │                       │     │                     │
-└─────────────────┘     └──────────────────────┘     └─────────────────────┘
-```
+## The DCM Project Object
 
-**Key design choices:**
-- Source tables use `CHANGE_TRACKING = TRUE` to enable incremental CDC
-- Dynamic tables auto-refresh when source data changes (no scheduling needed)
-- Views add business logic (segmentation, performance tiers) without materializing data
-
-## Project Structure
+A DCM Project Object is a **schema-level object in Snowflake** — similar to a table or a view, but it serves a different purpose. It is the deployment engine and audit store for your infrastructure definitions.
 
 ```
-retail-sales-project/
-├── manifest.yml.example        # Template with placeholders (tracked in git)
-├── manifest.yml                # Local config with real values (gitignored)
-├── .gitignore
+┌─────────────────────────────────────────────────────────────┐
+│              DCM Project Object                              │
+│              (Schema-Level Object)                           │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  • Receives definition files during PLAN and DEPLOY         │
+│  • Compares definitions against live Snowflake state        │
+│  • Determines CREATE / ALTER / DROP operations              │
+│  • Stores immutable deployment history and artifacts        │
+│  • Can manage objects in ANY database (not just its own)    │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Key Characteristics
+
+| Property | Description |
+|----------|-------------|
+| **Location** | Lives in a database.schema (e.g., `ADMIN_DB.DCM.MY_PROJECT`) |
+| **Scope** | Can manage objects across multiple databases — not limited to its parent |
+| **Constraint** | Cannot define its own parent database or schema |
+| **One per environment** | Each target (DEV, STG, PROD) needs its own project object |
+| **Audit trail** | Stores all deployment history with artifacts |
+
+### Creating a DCM Project Object
+
+```sql
+-- SQL
+CREATE DCM PROJECT my_db.my_schema.my_project;
+
+-- Snowflake CLI
+snow dcm create my_db.my_schema.my_project -c <connection>
+```
+
+**Required privilege:**
+```sql
+GRANT CREATE DCM PROJECT ON SCHEMA my_db.my_schema TO ROLE my_role;
+```
+
+> **Reference**: [Supported object types in DCM Projects](https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-supported-entities)
+
+---
+
+## DCM Project Lifecycle
+
+The lifecycle follows a structured, repeatable pattern — similar to Terraform's init → plan → apply workflow.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        DCM PROJECT LIFECYCLE                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌─────────┐
+  │  AUTHOR  │───▶│  CREATE  │───▶│   PLAN   │───▶│  DEPLOY  │───▶│ MONITOR │
+  │          │    │          │    │          │    │          │    │         │
+  │ Write    │    │ Register │    │ Dry-run  │    │ Apply    │    │ Audit & │
+  │ DEFINE   │    │ project  │    │ preview  │    │ changes  │    │ iterate │
+  │ files    │    │ object   │    │ changes  │    │ to live  │    │         │
+  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └─────────┘
+       │                                                                │
+       └────────────────────────── ITERATE ─────────────────────────────┘
+```
+
+### Phase 1: Author
+
+Write definition files using `DEFINE` statements. These are SQL files with a declarative twist:
+
+```sql
+DEFINE DATABASE analytics_db;
+DEFINE SCHEMA analytics_db.raw;
+DEFINE TABLE analytics_db.raw.events (
+    event_id NUMBER NOT NULL,
+    event_type VARCHAR(50),
+    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+)
+CHANGE_TRACKING = TRUE;
+```
+
+**Rules:**
+- All objects use **fully qualified names** (`database.schema.object`)
+- Order of DEFINE statements does not matter — Snowflake resolves dependencies
+- Removing a DEFINE statement causes the object to be **dropped** on next deploy
+
+### Phase 2: Create
+
+Register the DCM project object in Snowflake (one-time per environment):
+
+```bash
+snow dcm create MY_DB.MY_SCHEMA.MY_PROJECT -c <connection>
+```
+
+### Phase 3: Plan
+
+Preview what will change — without modifying anything:
+
+```bash
+snow dcm plan MY_DB.MY_SCHEMA.MY_PROJECT -c <connection> --target DEV
+```
+
+Output:
+```
+CREATE   DATABASE    ANALYTICS_DB
+CREATE   SCHEMA      ANALYTICS_DB.RAW
+CREATE   TABLE       ANALYTICS_DB.RAW.EVENTS
+
+Planned 3 entities (3 to create, 0 to alter, 0 to drop)
+```
+
+### Phase 4: Deploy
+
+Apply the changes:
+
+```bash
+snow dcm deploy MY_DB.MY_SCHEMA.MY_PROJECT -c <connection> --target DEV --alias "v1.0"
+```
+
+### Phase 5: Monitor & Iterate
+
+```bash
+# View deployment history
+snow dcm list-deployments MY_DB.MY_SCHEMA.MY_PROJECT -c <connection>
+
+# Make changes to definitions, then repeat: plan → deploy
+```
+
+> **Reference**: [Deploy and manage DCM Projects](https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-use)
+
+---
+
+## Project File Structure
+
+A DCM project consists of a manifest file and definition files:
+
+```
+my-project/
+├── manifest.yml                # Project configuration and targets
 └── sources/
     └── definitions/
-        ├── infrastructure.sql  # Database, schemas, warehouse
-        ├── tables.sql          # Source tables
+        ├── infrastructure.sql  # Databases, schemas, warehouses
+        ├── tables.sql          # Table definitions
         ├── analytics.sql       # Dynamic tables
-        ├── serve.sql           # Consumption views
+        ├── serve.sql           # Views
+        ├── access.sql          # Roles and grants
         └── procedures.sql      # Stored procedures
 ```
 
-### Why This Layout?
+### The Manifest (`manifest.yml`)
 
-- **One file per layer** — easy to find and review changes
-- **Flat structure** — no unnecessary nesting for a project with 15 objects
-- **Manifest separate from definitions** — config vs logic separation
-- **Gitignored manifest** — account-specific values never leak to the repo
-
-## Step 1: The Manifest (Multi-Environment Config)
-
-The manifest is the heart of a DCM project. It defines deployment targets and Jinja templating variables:
+The manifest defines **targets** (environments) and **templating variables**:
 
 ```yaml
 manifest_version: 2
@@ -84,17 +214,12 @@ default_target: 'DEV'
 targets:
   DEV:
     account_identifier: <YOUR_ACCOUNT>
-    project_name: 'RETAIL_DB_DEV.DCM_PROJECTS.RETAIL_SALES_DEV'
+    project_name: 'ADMIN_DB.DCM.MY_PROJECT_DEV'
     project_owner: ENGINEERING_DEV
     templating_config: 'DEV'
-  STG:
-    account_identifier: <YOUR_ACCOUNT>
-    project_name: 'RETAIL_DB_STG.DCM_PROJECTS.RETAIL_SALES_STG'
-    project_owner: ENGINEERING_STG
-    templating_config: 'STG'
   PROD:
     account_identifier: <YOUR_ACCOUNT>
-    project_name: 'RETAIL_DB_PROD.DCM_PROJECTS.RETAIL_SALES_PROD'
+    project_name: 'ADMIN_DB.DCM.MY_PROJECT_PROD'
     project_owner: ENGINEERING_PROD
     templating_config: 'PROD'
 
@@ -102,98 +227,180 @@ templating:
   defaults:
     env_suffix: '_DEV'
     wh_size: 'XSMALL'
-    dt_lag: '1 hour'
-    retention_days: 1
   configurations:
     DEV:
       env_suffix: '_DEV'
       wh_size: 'XSMALL'
-      dt_lag: '2 minutes'
-    STG:
-      env_suffix: '_STG'
-      wh_size: 'SMALL'
-      dt_lag: '2 minutes'
     PROD:
       env_suffix: '_PROD'
-      wh_size: 'MEDIUM'
-      dt_lag: '2 minutes'
+      wh_size: 'LARGE'
 ```
 
-### Key Concepts
+---
 
-- **Each target = one DCM project in Snowflake** — DEV, STG, PROD are separate registrations
-- **`templating_config`** links a target to its variable set
-- **Variable resolution**: `defaults` → `configurations.<name>` → `--variable` CLI flag (highest priority)
-- **Same codebase, different behavior** — warehouse size, refresh lag, and naming all vary by environment
+## Supported Object Types
 
-## Step 2: Infrastructure Layer
+DCM supports the following Snowflake objects via the `DEFINE` statement:
+
+| Object Type | Keyword | Notes |
+|-------------|---------|-------|
+| Database | `DEFINE DATABASE` | Cannot rename after creation |
+| Schema | `DEFINE SCHEMA` | Supports `WITH MANAGED ACCESS` |
+| Table | `DEFINE TABLE` | Supports `CHANGE_TRACKING`, column add/drop |
+| View | `DEFINE VIEW` | Secure views supported |
+| Dynamic Table | `DEFINE DYNAMIC TABLE` | Requires `WAREHOUSE` and `TARGET_LAG` |
+| Task | `DEFINE TASK` | Auto suspend/resume during deploy |
+| Alert | `DEFINE ALERT` | Auto suspend/resume during deploy |
+| Warehouse | `DEFINE WAREHOUSE` | Uses `WITH` clause |
+| Role | `DEFINE ROLE` | Account-wide scope |
+| Database Role | `DEFINE DATABASE ROLE` | Database-scoped |
+| Stage (Internal) | `DEFINE STAGE` | External stages also supported |
+| File Format | `DEFINE FILE FORMAT` | TYPE is immutable |
+| Sequence | `DEFINE SEQUENCE` | START is immutable |
+| SQL Procedure | `DEFINE PROCEDURE` | Signature is immutable |
+| SQL Function | `DEFINE FUNCTION` | No auto dependency sorting |
+| Tag | `DEFINE TAG` | Cannot attach to objects via DCM |
+| Auth Policy | `DEFINE AUTHENTICATION POLICY` | PAT policies |
+
+**Imperative statements** (not DEFINE):
+- `GRANT ... TO ROLE ...` — Standard SQL grant syntax
+- `ATTACH DATA METRIC FUNCTION` — Data quality expectations
+
+> **Reference**: [Supported object types](https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-supported-entities)
+
+---
+
+## Multi-Environment Deployment
+
+DCM is designed for promoting code across environments. One codebase, multiple targets:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    ONE CODEBASE (Git Repository)                         │
+│                                                                         │
+│   manifest.yml + sources/definitions/*.sql                              │
+└────────────┬────────────────────┬────────────────────┬──────────────────┘
+             │                    │                    │
+             ▼                    ▼                    ▼
+   ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
+   │   --target DEV   │ │   --target STG   │ │  --target PROD   │
+   │                  │ │                  │ │                  │
+   │ Project Object:  │ │ Project Object:  │ │ Project Object:  │
+   │ MY_PROJECT_DEV   │ │ MY_PROJECT_STG   │ │ MY_PROJECT_PROD  │
+   │                  │ │                  │ │                  │
+   │ WH: XSMALL       │ │ WH: SMALL        │ │ WH: LARGE        │
+   │ Lag: 1 hour      │ │ Lag: 30 min      │ │ Lag: 5 min       │
+   └──────────────────┘ └──────────────────┘ └──────────────────┘
+```
+
+### How Jinja Templating Enables This
+
+Definition files use `{{ variables }}` that resolve differently per environment:
 
 ```sql
--- infrastructure.sql
-DEFINE DATABASE RETAIL_DATA{{env_suffix}}
-    COMMENT = 'Retail sales data - {{env_suffix}} environment';
+DEFINE DATABASE SALES_DATA{{env_suffix}};
 
-DEFINE SCHEMA RETAIL_DATA{{env_suffix}}.RAW
-    COMMENT = 'Raw source tables from transactional systems'
-    DATA_RETENTION_TIME_IN_DAYS = {{retention_days}};
+DEFINE WAREHOUSE SALES_WH{{env_suffix}}
+WITH WAREHOUSE_SIZE = '{{wh_size}}';
+```
 
-DEFINE SCHEMA RETAIL_DATA{{env_suffix}}.ANALYTICS
-    WITH MANAGED ACCESS
-    COMMENT = 'Aggregated analytics via dynamic tables'
-    DATA_RETENTION_TIME_IN_DAYS = {{retention_days}};
+When deployed with `--target DEV`, this renders as:
+```sql
+DEFINE DATABASE SALES_DATA_DEV;
+DEFINE WAREHOUSE SALES_WH_DEV WITH WAREHOUSE_SIZE = 'XSMALL';
+```
 
-DEFINE SCHEMA RETAIL_DATA{{env_suffix}}.SERVE
-    WITH MANAGED ACCESS
-    COMMENT = 'Consumption views for dashboards and reporting';
+When deployed with `--target PROD`:
+```sql
+DEFINE DATABASE SALES_DATA_PROD;
+DEFINE WAREHOUSE SALES_WH_PROD WITH WAREHOUSE_SIZE = 'LARGE';
+```
+
+---
+
+## How DCM Detects Changes
+
+DCM compares your local definition files against the **live state** in Snowflake:
+
+```
+┌───────────────────────┐         ┌───────────────────────┐
+│   LOCAL DEFINITIONS    │         │   LIVE SNOWFLAKE      │
+│   (Your .sql files)   │         │   (Current state)     │
+├───────────────────────┤         ├───────────────────────┤
+│                       │         │                       │
+│ DEFINE TABLE foo (    │◄──DIFF──▶ TABLE foo exists with │
+│   id NUMBER,         │         │   id NUMBER           │
+│   name VARCHAR,      │         │                       │
+│   email VARCHAR ←NEW │         │   (no email column)   │
+│ );                   │         │                       │
+│                       │         │                       │
+└───────────────────────┘         └───────────────────────┘
+                    │
+                    ▼
+            ┌──────────────┐
+            │ PLAN OUTPUT  │
+            │              │
+            │ ALTER TABLE  │
+            │ foo          │
+            │ (add email)  │
+            └──────────────┘
+```
+
+| Scenario | DCM Action |
+|----------|------------|
+| New DEFINE statement | **CREATE** the object |
+| DEFINE changed vs live state | **ALTER** the object |
+| DEFINE removed from files | **DROP** the object |
+| DEFINE matches live state | **No action** (skipped) |
+
+---
+
+## Practical Example: Retail Sales Pipeline
+
+Here's a concise, real-world example demonstrating all concepts together.
+
+### Infrastructure
+
+```sql
+-- sources/definitions/infrastructure.sql
+DEFINE DATABASE RETAIL_DATA{{env_suffix}};
+
+DEFINE SCHEMA RETAIL_DATA{{env_suffix}}.RAW;
+DEFINE SCHEMA RETAIL_DATA{{env_suffix}}.ANALYTICS WITH MANAGED ACCESS;
+DEFINE SCHEMA RETAIL_DATA{{env_suffix}}.SERVE WITH MANAGED ACCESS;
 
 DEFINE WAREHOUSE RETAIL_WH{{env_suffix}}
-WITH
-    WAREHOUSE_SIZE = '{{wh_size}}'
-    AUTO_SUSPEND = 300
-    AUTO_RESUME = TRUE
-    COMMENT = 'Compute for retail analytics pipeline';
+WITH WAREHOUSE_SIZE = '{{wh_size}}' AUTO_SUSPEND = 300 AUTO_RESUME = TRUE;
 ```
 
-**Why `WITH MANAGED ACCESS`?** It centralizes grant management on the ANALYTICS and SERVE schemas — only the schema owner can grant privileges, preventing ad-hoc access sprawl.
-
-## Step 3: Source Tables
+### Source Tables
 
 ```sql
--- tables.sql
+-- sources/definitions/tables.sql
 DEFINE TABLE RETAIL_DATA{{env_suffix}}.RAW.CUSTOMERS (
     CUSTOMER_ID NUMBER NOT NULL,
     FIRST_NAME VARCHAR(100),
     LAST_NAME VARCHAR(100),
     EMAIL VARCHAR(255),
-    PHONE VARCHAR(20),
-    CITY VARCHAR(100),
-    STATE VARCHAR(50),
-    SIGNUP_DATE DATE,
-    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+    SIGNUP_DATE DATE
 )
-CHANGE_TRACKING = TRUE
-COMMENT = 'Customer master data from CRM system';
+CHANGE_TRACKING = TRUE;
 
 DEFINE TABLE RETAIL_DATA{{env_suffix}}.RAW.SALES_ORDERS (
     ORDER_ID NUMBER NOT NULL,
     CUSTOMER_ID NUMBER NOT NULL,
     ORDER_DATE DATE,
-    STATUS VARCHAR(20) DEFAULT 'PENDING',
     TOTAL_AMOUNT NUMBER(12,2),
-    PAYMENT_METHOD VARCHAR(50),
-    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+    STATUS VARCHAR(20) DEFAULT 'PENDING'
 )
-CHANGE_TRACKING = TRUE
-COMMENT = 'Sales order headers from POS system';
+CHANGE_TRACKING = TRUE;
 ```
 
-**`CHANGE_TRACKING = TRUE`** is critical — without it, dynamic tables cannot detect incremental changes and must do full refreshes every time.
-
-## Step 4: Dynamic Tables (Auto-Refreshing Transformations)
+### Dynamic Tables (Auto-Refreshing Transformations)
 
 ```sql
--- analytics.sql
-DEFINE DYNAMIC TABLE RETAIL_DATA{{env_suffix}}.ANALYTICS.DT_CUSTOMER_ORDERS_SUMMARY
+-- sources/definitions/analytics.sql
+DEFINE DYNAMIC TABLE RETAIL_DATA{{env_suffix}}.ANALYTICS.DT_CUSTOMER_SUMMARY
 WAREHOUSE = 'RETAIL_WH{{env_suffix}}'
 TARGET_LAG = '{{dt_lag}}'
 INITIALIZE = 'ON_CREATE'
@@ -202,239 +409,122 @@ SELECT
     c.CUSTOMER_ID,
     c.FIRST_NAME,
     c.LAST_NAME,
-    c.EMAIL,
-    c.CITY,
-    c.STATE,
     COUNT(DISTINCT o.ORDER_ID) AS TOTAL_ORDERS,
-    SUM(o.TOTAL_AMOUNT) AS TOTAL_SPEND,
-    AVG(o.TOTAL_AMOUNT) AS AVG_ORDER_VALUE,
-    MIN(o.ORDER_DATE) AS FIRST_ORDER_DATE,
-    MAX(o.ORDER_DATE) AS LAST_ORDER_DATE
+    SUM(o.TOTAL_AMOUNT) AS TOTAL_SPEND
 FROM RETAIL_DATA{{env_suffix}}.RAW.CUSTOMERS c
 LEFT JOIN RETAIL_DATA{{env_suffix}}.RAW.SALES_ORDERS o
     ON c.CUSTOMER_ID = o.CUSTOMER_ID
-GROUP BY
-    c.CUSTOMER_ID, c.FIRST_NAME, c.LAST_NAME,
-    c.EMAIL, c.CITY, c.STATE;
+GROUP BY c.CUSTOMER_ID, c.FIRST_NAME, c.LAST_NAME;
 ```
 
-### Why Dynamic Tables?
-
-- **No scheduler needed** — Snowflake handles refresh automatically based on `TARGET_LAG`
-- **Incremental** — only processes changed rows (thanks to `CHANGE_TRACKING`)
-- **Declarative** — you write a SELECT, Snowflake handles the materialization
-- **DAG-aware** — downstream dynamic tables refresh only when upstream data changes
-
-### TARGET_LAG Strategy
-
-| Environment | Lag | Rationale |
-|-------------|-----|-----------|
-| DEV | 2 minutes | Fast feedback during development |
-| STG | 2 minutes | Mirrors production behavior |
-| PROD | 2 minutes | Near real-time for dashboards |
-
-Use `'DOWNSTREAM'` instead of a time interval if a dynamic table only needs to refresh when queried by a downstream consumer.
-
-## Step 5: Serving Layer (Views)
-
-```sql
--- serve.sql
-DEFINE VIEW RETAIL_DATA{{env_suffix}}.SERVE.VW_CUSTOMER_360
-AS
-SELECT
-    cs.CUSTOMER_ID,
-    cs.FIRST_NAME,
-    cs.LAST_NAME,
-    cs.TOTAL_ORDERS,
-    cs.TOTAL_SPEND,
-    cs.LAST_ORDER_DATE,
-    DATEDIFF('day', cs.LAST_ORDER_DATE, CURRENT_DATE()) AS DAYS_SINCE_LAST_ORDER,
-    CASE
-        WHEN cs.TOTAL_ORDERS = 0 THEN 'PROSPECT'
-        WHEN cs.TOTAL_ORDERS = 1 THEN 'NEW'
-        WHEN cs.TOTAL_SPEND >= 1000 THEN 'VIP'
-        WHEN DATEDIFF('day', cs.LAST_ORDER_DATE, CURRENT_DATE()) > 90 THEN 'AT_RISK'
-        ELSE 'ACTIVE'
-    END AS CUSTOMER_SEGMENT
-FROM RETAIL_DATA{{env_suffix}}.ANALYTICS.DT_CUSTOMER_ORDERS_SUMMARY cs;
-```
-
-Views add **business logic without materialization cost** — segmentation rules, calculated fields, and formatted outputs that change frequently without triggering full rebuilds.
-
-## Step 6: Stored Procedures
-
-```sql
--- procedures.sql
-DEFINE PROCEDURE RETAIL_DATA{{env_suffix}}.RAW.CANCEL_CUSTOMER_ORDERS(P_CUSTOMER_ID NUMBER)
-RETURNS VARCHAR
-LANGUAGE SQL
-AS
-$$
-BEGIN
-    UPDATE RETAIL_DATA{{env_suffix}}.RAW.SALES_ORDERS
-    SET STATUS = 'CANCELLED'
-    WHERE CUSTOMER_ID = :P_CUSTOMER_ID
-      AND STATUS != 'CANCELLED';
-
-    RETURN 'Cancelled ' || SQLROWCOUNT || ' orders for customer ' || :P_CUSTOMER_ID;
-END;
-$$;
-```
-
-**Note the `:P_CUSTOMER_ID` colon prefix** — this is required for referencing parameters inside SQL statements within Snowflake SQL procedures.
-
-## Deployment Workflow
-
-### Prerequisites (One-Time)
-
-```sql
--- Create the project container (DCM can't define its own parent)
-CREATE DATABASE IF NOT EXISTS RETAIL_DB_DEV;
-CREATE SCHEMA IF NOT EXISTS RETAIL_DB_DEV.DCM_PROJECTS;
-
--- Create deployment role
-CREATE ROLE IF NOT EXISTS ENGINEERING_DEV;
-GRANT CREATE DCM PROJECT ON SCHEMA RETAIL_DB_DEV.DCM_PROJECTS TO ROLE ENGINEERING_DEV;
-GRANT CREATE DATABASE ON ACCOUNT TO ROLE ENGINEERING_DEV;
-GRANT CREATE WAREHOUSE ON ACCOUNT TO ROLE ENGINEERING_DEV;
-```
-
-### Day-to-Day Commands
+### Deployment
 
 ```bash
-# 1. Register project (one-time)
-snow dcm create RETAIL_DB_DEV.DCM_PROJECTS.RETAIL_SALES_DEV -c <connection>
-
-# 2. Validate definitions (syntax + dependency check)
-snow dcm raw-analyze RETAIL_DB_DEV.DCM_PROJECTS.RETAIL_SALES_DEV \
-  -c <connection> --target DEV
-
-# 3. Preview changes (Terraform plan equivalent)
-snow dcm plan RETAIL_DB_DEV.DCM_PROJECTS.RETAIL_SALES_DEV \
-  -c <connection> --target DEV
-
-# 4. Apply changes
-snow dcm deploy RETAIL_DB_DEV.DCM_PROJECTS.RETAIL_SALES_DEV \
-  -c <connection> --target DEV --alias "describe_your_change"
+# Validate → Preview → Apply
+snow dcm raw-analyze MY_DB.DCM.RETAIL_SALES_DEV -c <conn> --target DEV
+snow dcm plan        MY_DB.DCM.RETAIL_SALES_DEV -c <conn> --target DEV
+snow dcm deploy      MY_DB.DCM.RETAIL_SALES_DEV -c <conn> --target DEV --alias "v1.0"
 ```
 
-### What Plan Output Looks Like
-
-```
-CREATE   DATABASE        RETAIL_DATA_DEV
-CREATE   SCHEMA          RETAIL_DATA_DEV.RAW
-ALTER    DYNAMIC_TABLE   RETAIL_DATA_DEV.ANALYTICS.DT_DAILY_SALES_AGG
-
-Planned 15 entities (2 to create, 1 to alter, 0 to drop)
-```
-
-Only changed objects appear — unchanged objects are silently skipped.
-
-## The Parent Database Constraint
-
-The most common DCM gotcha: **a project cannot DEFINE its own parent database**.
-
-```
-Project registered at: RETAIL_DB_DEV.DCM_PROJECTS.RETAIL_SALES_DEV
-                       ^^^^^^^^^^^^^^
-                       Cannot DEFINE this database!
-
-Solution: Define a DIFFERENT database for your data objects
-          DEFINE DATABASE RETAIL_DATA_DEV;  ← This is fine
-```
-
-This is why we separate the project container (`RETAIL_DB_DEV`) from the data database (`RETAIL_DATA_DEV`).
-
-## Multi-Environment Promotion
-
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│     DEV      │────▶│     STG      │────▶│     PROD     │
-│              │     │              │     │              │
-│ RETAIL_DATA  │     │ RETAIL_DATA  │     │ RETAIL_DATA  │
-│ _DEV         │     │ _STG         │     │ _PROD        │
-│              │     │              │     │              │
-│ WH: XSMALL   │     │ WH: SMALL    │     │ WH: MEDIUM   │
-│ Lag: 2 min   │     │ Lag: 2 min   │     │ Lag: 2 min   │
-└──────────────┘     └──────────────┘     └──────────────┘
-```
-
-Same code, different `--target`:
-
-```bash
-snow dcm deploy ... --target DEV   # Developer deploys
-snow dcm deploy ... --target STG   # CI/CD promotes to staging
-snow dcm deploy ... --target PROD  # Release pipeline deploys to production
-```
-
-## Developer Sandboxes
-
-Multiple developers can work in parallel without conflicts using `--variable`:
-
-```bash
-# Developer A
-snow dcm deploy ... --target DEV --variable "env_suffix='_DEV_ALICE'"
-
-# Developer B
-snow dcm deploy ... --target DEV --variable "env_suffix='_DEV_BOB'"
-```
-
-This creates completely isolated databases (`RETAIL_DATA_DEV_ALICE`, `RETAIL_DATA_DEV_BOB`) from the same definition files.
-
-## Best Practices
-
-### 1. Project Organization
-
-- **Separate project container from data** — avoid the parent database constraint entirely
-- **One project per domain** — sales, marketing, finance each get their own project
-- **Flat file structure** — nest only when you exceed 50+ objects
-
-### 2. Safety
-
-- **Always `plan` before `deploy`** — review CREATE/ALTER/DROP before applying
-- **Use `--alias` on every deploy** — creates an audit trail (`snow dcm list-deployments`)
-- **Never deploy with ACCOUNTADMIN** — use least-privilege roles per environment
-- **Watch for DROPs** — removing a DEFINE statement causes the object to be dropped on next deploy
-
-### 3. Templating
-
-- **Template everything that varies by environment** — names, sizes, lags, retention
-- **Use `defaults` for common values** — override only what differs in each config
-- **Keep it simple** — don't over-abstract with complex Jinja when a few variables suffice
-
-### 4. Source Control
-
-- **Gitignore `manifest.yml`** — it contains account identifiers
-- **Track `manifest.yml.example`** — with `<PLACEHOLDER>` values for onboarding
-- **One commit per logical change** — makes `plan` diffs reviewable in PRs
-
-### 5. Dynamic Tables
-
-- **Always enable `CHANGE_TRACKING`** on source tables — required for incremental refresh
-- **Use `INITIALIZE = 'ON_CREATE'`** — verifies data immediately after deploy
-- **Choose `TARGET_LAG` based on business need** — shorter lag = more compute cost
+---
 
 ## Command Reference
 
-| Command | Purpose | When to Use |
-|---------|---------|-------------|
-| `snow dcm create` | Register project | Once per environment |
-| `snow dcm raw-analyze` | Validate syntax | During development |
-| `snow dcm plan` | Preview changes | Before every deploy |
-| `snow dcm deploy` | Apply changes | When ready to release |
-| `snow dcm refresh` | Trigger DT refresh | Testing after data load |
-| `snow dcm preview` | Query managed objects | Quick data checks |
-| `snow dcm test` | Run expectations | Data quality validation |
-| `snow dcm list-deployments` | Audit trail | Troubleshooting |
-| `snow dcm purge` | Drop all objects | Full teardown (dangerous) |
+| Command | Equivalent | Purpose |
+|---------|-----------|---------|
+| `snow dcm create` | `terraform init` | Register project object |
+| `snow dcm raw-analyze` | `terraform validate` | Syntax and dependency validation |
+| `snow dcm plan` | `terraform plan` | Preview CREATE/ALTER/DROP changes |
+| `snow dcm deploy` | `terraform apply` | Apply changes to Snowflake |
+| `snow dcm list` | — | List all projects in account |
+| `snow dcm describe` | `terraform show` | Show project metadata |
+| `snow dcm list-deployments` | — | View deployment audit trail |
+| `snow dcm preview` | — | Query managed tables/views |
+| `snow dcm refresh` | — | Trigger dynamic table refresh |
+| `snow dcm test` | — | Run data quality expectations |
+| `snow dcm purge` | `terraform destroy` | Drop all managed objects |
+| `snow dcm drop` | — | Remove project metadata only |
 
-## Conclusion
+> **Reference**: [DCM SQL Commands](https://docs.snowflake.com/en/sql-reference/commands-dcm-projects) | [Snowflake CLI DCM](https://docs.snowflake.com/en/developer-guide/snowflake-cli/data-pipelines/dcm-projects)
 
-DCM brings infrastructure-as-code discipline to Snowflake without external tools. The key principles:
+---
 
-1. **DEFINE, don't CREATE** — declarative over imperative
-2. **One codebase, many environments** — Jinja templating handles the differences
-3. **Plan before deploy** — always review the diff
-4. **Let Snowflake do the work** — dynamic tables replace scheduled ETL
+## Key Constraints and Considerations
 
-The complete source code for this project is available at: [github.com/smakireddy/snowflake-dcm-retail-sales](https://github.com/smakireddy/snowflake-dcm-retail-sales)
+### What You Must Know
+
+1. **Parent database constraint** — A project cannot DEFINE its own parent database or schema. Place the project object in a separate admin database if you need to define multiple data databases.
+
+2. **Removing a DEFINE = DROP** — If you delete a DEFINE statement that was previously deployed, DCM will **drop that object** (and its data) on next deploy. This is by design but can be dangerous.
+
+3. **Immutable properties** — Some properties cannot be changed after creation (e.g., table renames, procedure signatures, sequence START values). DCM will error if you attempt to modify these.
+
+4. **One project per environment** — Each target environment (DEV, STG, PROD) needs its own project object. Projects on the same account must have **unique names**.
+
+5. **Fully qualified names required** — All objects and references must use `database.schema.object` format.
+
+### Limits
+
+| Limit | Value |
+|-------|-------|
+| Max entities per project | 20,000 |
+| Max total file size | 10 MB |
+| Fewer files = faster execution | Consolidate when possible |
+
+---
+
+## Interface Options
+
+| Interface | Best For |
+|-----------|----------|
+| **Snowsight Workspace** | Browser-based authoring, Git integration, visual plan/deploy |
+| **Local IDE + Snowflake CLI** | Engineers who prefer local development, CI/CD pipelines |
+| **Cortex Code** | AI-assisted authoring, debugging, and deployment |
+| **SQL Commands** | Direct execution from any Snowflake SQL interface |
+
+---
+
+## CI/CD Integration
+
+DCM is designed for automated pipelines. Snowflake provides [reusable GitHub Actions](https://github.com/Snowflake-Labs/snowflake-dcm-projects) for:
+
+- Parsing manifests
+- Testing connections
+- Running PLAN in pull requests
+- Deploying on merge to main
+
+```yaml
+# Simplified CI/CD flow
+on:
+  pull_request:  → snow dcm plan (comment results on PR)
+  push (main):   → snow dcm deploy --target PROD --alias "${{ github.sha }}"
+```
+
+---
+
+## Summary
+
+| Concept | One-Line Explanation |
+|---------|---------------------|
+| DCM Project Object | A schema-level Snowflake object that stores and executes your infrastructure definitions |
+| DEFINE statement | Declares the desired state of an object — replaces CREATE/ALTER/DROP |
+| Manifest | YAML config that maps targets to project objects and templating variables |
+| Plan | Dry-run that shows what will change without modifying anything |
+| Deploy | Applies the plan — creates, alters, or drops objects to match definitions |
+| Target | An environment (DEV/STG/PROD) with its own project object and variable config |
+| Templating | Jinja2 variables/loops that make one codebase work across environments |
+
+---
+
+## Further Reading
+
+- [DCM Projects Overview](https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-overview)
+- [Deploy and Manage DCM Projects](https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-use)
+- [Supported Object Types](https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-supported-entities)
+- [DCM SQL Commands Reference](https://docs.snowflake.com/en/sql-reference/commands-dcm-projects)
+- [Snowflake CLI for DCM](https://docs.snowflake.com/en/developer-guide/snowflake-cli/data-pipelines/dcm-projects)
+- [Snowflake Labs DCM Repository (Quickstarts & GitHub Actions)](https://github.com/Snowflake-Labs/snowflake-dcm-projects)
+
+---
+
+*Example source code: [github.com/smakireddy/snowflake-dcm-retail-sales](https://github.com/smakireddy/snowflake-dcm-retail-sales)*
